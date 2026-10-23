@@ -1,0 +1,168 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  direcUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  CLIENT
+  DEVELOPER
+  ADMIN
+}
+
+enum BountyStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum BidStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum TransactionStatus {
+  ESCROW_HELD     // 資金託管中
+  DELIVERED       // 已交付 ISO 待驗收
+  RELEASED        // 驗收通過，已放款給開發者
+  DISPUTED        // 爭議中
+}
+
+// prisma/schema.prisma 補充部分
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 擴充原有的 User 模型以支援 OAuth 與密碼登入
+model User {
+  id            String       @id @default(cuid())
+  name          String?
+  email         String?      @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?      // 針對傳統 Email 註冊
+  role          Role         @default(CLIENT)
+  createdAt     DateTime     @default(now())
+
+  accounts      Account[]
+  sessions      Session[]
+  osReleases    OSRelease[]
+  bounties      Bounty[]
+  bids          Bid[]
+  clientTransactions Transaction[] @relation("ClientTransactions")
+  developerTransactions Transaction[] @relation("DeveloperTransactions")
+}
+
+
+
+
+// 2. OS 儲存庫 (OS Repository)
+model OSRelease {
+  id             String        @id @default(cuid())
+  title          String
+  version        String
+  architecture   String        // 例如: x86_64, arm64, riscv64
+  baseDistro     String        // 例如: Debian, Arch, Alpine, Scratch
+  description    String
+  s3Key          String        @unique
+  s3Bucket       String        @default("custom-os-iso-repo-ap-southeast-2")
+  fileSizeBytes  BigInt        // 支援數 GB 大小記錄
+  sha256Checksum String        // 64字元 SHA-256 校驗碼
+  price          Decimal       @default(0.00) @db.Decimal(10, 2)
+  isPublic       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+
+  developerId    String
+  developer      User          @relation(fields: [developerId], references: [id])
+  transactions   Transaction[] // 若此 ISO 為特定懸賞任務的交付物
+}
+
+// 3. 懸賞與競標市集 (Bounty & Bidding Marketplace)
+model Bounty {
+  id             String        @id @default(cuid())
+  title          String
+  requirements   String        // 詳細核心配置、預裝套件、硬體相容性需求
+  targetArch     String
+  budget         Decimal       @db.Decimal(10, 2)
+  status         BountyStatus  @default(OPEN)
+  createdAt      DateTime      @default(now())
+
+  clientId       String
+  client         User          @relation(fields: [clientId], references: [id])
+  bids           Bid[]
+  transaction    Transaction?
+}
+
+model Bid {
+  id             String        @id @default(cuid())
+  amount         Decimal       @db.Decimal(10, 2)
+  estimatedDays  Int
+  proposal       String        // 實作方案說明
+  status         BidStatus     @default(PENDING)
+  createdAt      DateTime      @default(now())
+
+  bountyId       String
+  bounty         Bounty        @relation(fields: [bountyId], references: [id])
+  developerId    String
+  developer      User          @relation(fields: [developerId], references: [id])
+  transaction    Transaction?
+}
+
+// 4. 交易與交付物追蹤 (Transaction Tracking)
+model Transaction {
+  id                 String            @id @default(cuid())
+  amount             Decimal           @db.Decimal(10, 2)
+  status             TransactionStatus @default(ESCROW_HELD)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  bountyId           String            @unique
+  bounty             Bounty            @relation(fields: [bountyId], references: [id])
+  bidId              String            @unique
+  bid                Bid               @relation(fields: [bidId], references: [id])
+  clientId           String
+  client             User              @relation("ClientTransactions", fields: [clientId], references: [id])
+  developerId        String
+  developer          User              @relation("DeveloperTransactions", fields: [developerId], references: [id])
+  
+  // 交付的客製化 ISO 映像檔
+  deliverableIsoId   String?
+  deliverableIso     OSRelease?        @relation(fields: [deliverableIsoId], references: [id])
+}
